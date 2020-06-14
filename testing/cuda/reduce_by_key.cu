@@ -264,3 +264,117 @@ void TestReduceByKeyCudaStreams()
 }
 DECLARE_UNITTEST(TestReduceByKeyCudaStreams);
 
+struct func_props {
+  int32_t lhs_idx;
+  int32_t rhs_idx;
+  bool expects_associativity;
+  bool expects_commutativity;
+};
+
+__device__ func_props operator +(func_props const& lhs, func_props const& rhs)
+{
+    return func_props{
+        lhs.lhs_idx,
+        rhs.rhs_idx,
+        lhs.expects_associativity || rhs.expects_associativity || rhs.lhs_idx != rhs.rhs_idx,
+        lhs.expects_commutativity || rhs.expects_commutativity || lhs.rhs_idx != rhs.lhs_idx - 1
+    };
+}
+
+__device__ func_props make_func_props(int32_t idx)
+{
+  return func_props{
+    idx,
+    idx,
+    false,
+    false
+  };
+}
+
+struct func_prop_reduce
+{
+  __device__ func_props operator ()(func_props const& lhs, func_props const& rhs) const
+  {
+    return lhs + rhs;
+  }
+};
+
+struct int_to_func_props
+{
+  __device__ func_props operator()(int32_t const x) const
+  {
+    return make_func_props(x);
+  }
+};
+
+template<typename T>
+struct always_equal
+{
+  __device__ bool operator ()(T const& lhs, T const& rhs) const
+  {
+    return true;
+  }
+};
+
+template<typename T>
+struct div_map
+{
+  T divisor;
+  __device__ T operator ()(T value) const
+  {
+    return value / divisor;
+  }
+};
+
+void TestNonCommutivitySupport()
+{
+  int32_t count = 1 << 30;
+  int32_t segments = 43;
+  int32_t elements_per_segment = count / segments;
+
+  auto count_iter = thrust::make_counting_iterator<int32_t>(0);
+  auto keys_iter = thrust::make_transform_iterator(count_iter, div_map<int32_t>{elements_per_segment});
+  auto keys = thrust::device_vector<int32_t>(keys_iter, keys_iter + count);
+
+  auto values_iter = thrust::make_transform_iterator(thrust::make_counting_iterator<int32_t>(0), int_to_func_props{});
+  auto values = thrust::device_vector<func_props>(values_iter, values_iter + count);
+
+  auto output_keys = thrust::device_vector<int32_t>(segments);
+  auto output_values = thrust::device_vector<func_props>(segments);
+
+  cudaStream_t s;
+  cudaStreamCreate(&s);
+
+  thrust::reduce_by_key(thrust::cuda::par.on(s),
+                        keys.begin(),
+                        keys.end(),
+                        values.begin(),
+                        output_keys.begin(),
+                        output_values.begin(),
+                        thrust::equal_to<int>(),
+                        func_prop_reduce{});
+
+  thrust::host_vector<func_props> h_output_values = output_values;
+
+  for (auto i = 0; i < segments; i ++)
+  {
+    ASSERT_EQUAL(h_output_values[i].expects_commutativity, true);
+    ASSERT_EQUAL(h_output_values[i].expects_associativity, false);
+  }
+
+  auto result = thrust::reduce(thrust::cuda::par.on(s),
+                               values.begin() + 1,
+                               values.end(),
+                               func_props{0, 0, false, false},
+                               func_prop_reduce{});
+
+  h_output_values = output_values;
+
+  ASSERT_EQUAL(result.expects_commutativity, true);
+  ASSERT_EQUAL(result.expects_associativity, false);
+
+  cudaStreamDestroy(s);
+
+}
+DECLARE_UNITTEST(TestNonCommutivitySupport);
+

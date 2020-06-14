@@ -52,22 +52,38 @@ struct TestReduceDeviceDevice
 };
 VariableUnitTest<TestReduceDeviceDevice, IntegralTypes> TestReduceDeviceDeviceInstance;
 
+struct noncommutative_reducer
+{
+  int __device__ operator()(int a, int b) {
+    return a;
+  }
+};
 
 void TestReduceCudaStreams()
 {
   typedef thrust::device_vector<int> Vector;
 
-  Vector v(3);
-  v[0] = 1; v[1] = -2; v[2] = 3;
+  auto count = 1 << 30;
+  auto zeros = thrust::make_constant_iterator<int>(0);
+
+  // Vector v(3);
+  // v[0] = 1; v[1] = -2; v[2] = 3;
+
+  auto v = Vector(zeros, zeros + count);
+
+  v[0] = 3;
 
   cudaStream_t s;
   cudaStreamCreate(&s);
 
-  // no initializer
-  ASSERT_EQUAL(thrust::reduce(thrust::cuda::par.on(s), v.begin(), v.end()), 2);
+  // // no initializer
+  // ASSERT_EQUAL(thrust::reduce(thrust::cuda::par.on(s), v.begin(), v.end()), 2);
 
-  // with initializer
-  ASSERT_EQUAL(thrust::reduce(thrust::cuda::par.on(s), v.begin(), v.end(), 10), 12);
+  // commutative
+  ASSERT_EQUAL(thrust::reduce(thrust::cuda::par.on(s), v.begin(), v.end(), 7, noncommutative_reducer{}), 7);
+
+  // // with initializer
+  // ASSERT_EQUAL(thrust::reduce(thrust::cuda::par.on(s), v.begin(), v.end(), 10), 12);
 
   cudaStreamDestroy(s);
 }
